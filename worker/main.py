@@ -4,6 +4,7 @@ import json
 import aioboto3
 from app.config import settings
 from app.services.s3 import download_file, upload_bytes
+from app.services.sqs import delete_message
 from app.services.image_processing import resize_image
 from worker.db import update_image_status
 
@@ -27,17 +28,23 @@ async def poll_messages():
             
             for message in messages:
                 job = json.loads(message["Body"])
-                await update_image_status(job["image_id"], "processing")
-                image_data = await download_file(job["s3_key"])
-                processed_data = resize_image(image_data)
-                processed_key = f"processed/{job['image_id']}.jpg"
+                try:
+                    await update_image_status(job["image_id"], "processing")
+                    image_data = await download_file(job["s3_key"])
+                    processed_data = resize_image(image_data)
+                    processed_key = f"processed/{job['image_id']}.jpg"
 
-                await upload_bytes(
-                    processed_data, 
-                    processed_key, 
-                    content_type="image/jpeg"
-                )
+                    await upload_bytes(
+                        processed_data, 
+                        processed_key, 
+                        content_type="image/jpeg"
+                    )
+                    await update_image_status(job["image_id"], "completed")
+                    await delete_message(message["ReceiptHandle"])
 
-                print(f"Uploaded processed image: {processed_key}")
+                    print(f"Uploaded processed image: {processed_key}")
+                except Exception as e:
+                    await update_image_status(job["image_id"], "failed")
+                    print(f"Failed to process image {job['image_id']}: {e}")
 
 asyncio.run(poll_messages())
